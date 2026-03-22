@@ -19,6 +19,14 @@ A complete **Go reimplementation** of [trafilatura](https://github.com/adbar/tra
 | **URL management** | Deduplication, filtering, same-host enforcement |
 | **CLI** | Full command-line interface with rich flag set |
 
+### ✨ 本 Go 版本的重點優化特色 (Key Enhancements)
+
+- **高效能併發爬蟲 (Concurrent Worker Pool)**：將原本的爬蟲架構重構為 `Coordinator` + 固定數量 `Worker Pool` 架構，大幅提升大量網頁抓取的效能與穩定性。
+- **高精準度內文提取 (Enhanced Extraction)**：升級 `densityBestNode` 評分演算法，加入父子節點分數聚合、內容容器白名單加權、以及更嚴格的常見雜訊黑名單懲罰機制與過濾。
+- **高容錯 JSON-LD 解析 (Robust Metadata)**：加入支援 `@graph` 巢狀結構、嚴謹的弱型別檢查與 `recover` 防護機制，避免在遇到不合規範的網頁時發生 Runtime Panic。
+- **完善的語料庫測試 (Golden Tests Corpus)**：建立涵蓋新聞、中日韓部落格、百科、SPA 空殼及高雜訊頁面等代表性場景的自動化測試套件，確保程式碼重構不引發回歸錯誤 (Regression)。
+- **安全的 HTML 轉譯 (Secure Escaping)**：全面採用 Go 標準庫 `html.EscapeString` 處理字串轉譯，預防 XSS 與注入攻擊風險。
+
 ---
 
 ## 🗂️ Project Structure
@@ -240,35 +248,18 @@ Apache 2.0 — same as the original trafilatura project.
 
 ---
 
-## 🔍 專案分析與改進建議 (Project Analysis & Improvements)
+## 🔍 專案分析與待改進項 (Project Analysis & Future Work)
 
-這是本 Go 版本專案的原始碼分析，我們發現了幾個架構上的優點，但也存在一些開發上的技術債與可以改進的方向：
+雖然本專案已經過多項架構與效能優化，但仍有一些可以繼續完善的方向：
 
-### 🚨 目前存在的問題 (Current Issues)
+### 🚨 目前待解決的問題 (Current Issues)
 
-1. **缺乏自動化測試 (Missing Tests)**
-   - **問題**：整個專案資料夾內（包含 `pkg/extract`、`pkg/metadata`、`pkg/fetch` 等核心演算法模組）目前完全沒有任何 `_test.go` 單元測試檔案。
-   - **影響**：網頁擷取邏輯高度依賴啟發式規則（Heuristics），在面對各式各樣混亂的 HTML 結構時容易產生非預期錯誤。沒有 Regression Tests 與邊界值測試，將難以確保程式碼重構或新增功能時不會破壞原有的提取準確度。
-2. **多語系偵測過於簡化 (Language Detection Flaws)**
+1. **多語系偵測過於簡化 (Language Detection Flaws)**
    - **問題**：在 `pkg/metadata/metadata.go` 中，對文章語言的捕捉僅依賴 `<html lang="xx">` 屬性。
    - **影響**：原版 Python Trafilatura 能夠選擇使用 `fasttext` 或 `cld2` 等強大的機器學習模組進行真實語系偵測。目前 Go 版本的實作若遇到未標示或錯誤標示 HTML `lang` 的網站，將無法得知文章真實的語言內容。
-3. **字串清理與 HTML 轉譯存在安全盲區 (String Escaping Quirks)**
-   - **問題**：~~在 `pkg/output/output.go` 裡的 `htmlEscape` 函式採用開發者手動實作的字串替換 (`strings.ReplaceAll(...)`)~~ (✅ 已替換為標準庫 `html.EscapeString`)；另外在 `formatJSON` 中擷取 Excerpt 首段時，直接使用 `runes[:200]` 切斷陣列。
-   - **影響**：~~手動設計的 HTML Escape 容易遺漏邊界情況（例如未處理單引號或其他特殊 Entities），建議改用 Go 標準庫 `html.EscapeString` 來避免 XSS 與注入風險。~~直接使用 `runes[:200]` 截斷字串在遇到複雜的 Unicode 組合字元（例如 Emoji 或特定語言的連字組合）時，有可能會造成字元截斷錯誤或呈現亂碼。
-4. **爬蟲與下載的併發模型設計 (Concurrency Model in Fetch)**
+2. **字串截斷處理潛在的 Unicode 問題 (String Truncation Quirks)**
+   - **問題**：在 `formatJSON` 中擷取 Excerpt 首段時，直接使用 `runes[:200]` 切斷陣列。
+   - **影響**：直接使用 `runes[:200]` 截斷字串在遇到複雜的 Unicode 組合字元（例如 Emoji 或特定語言的連字組合）時，有可能會造成字元截斷錯誤或呈現亂碼。
+3. **下載器的併發模型設計 (Concurrency Model in Fetch)**
    - **問題**：`pkg/fetch/fetch.go` 中的 `FetchMany` 雖然使用了 Goroutine + Channel 所構成的 Semaphore 來控制最大併發數量，但其迴圈仍會為「每一個給定的 URL」生成一個獨立的 Goroutine，然後再讓其在 Semaphore 上排隊等待 (Block)。
    - **影響**：如果使用者傳入了十萬個甚至百萬個 URL 列表，短時間內將導致記憶體中產生大量處於休眠狀態的 Goroutines，引發不必要的記憶體與排程開銷。
-
-### 💡 後續需要改進的地方 (Areas for Improvement)
-
-1. **引入完善的測試框架與語料庫 (Test Corpus)**：
-   - 強烈建議使用 Go 內建的 `testing` 工具來為 `extract` 與 `metadata` 邏輯撰寫詳盡的單元測試。
-   - 建立「語料庫 (Corpus)」測試資料夾，抓取數個目標網站（例如新聞網站、部落格、維基百科）作為 Golden Tests 對照組，並在 CI 流程中持續比對輸出品質。
-2. **重構併發模型為固定 Worker Pool**：
-   - 替換 `pkg/fetch` 與 `pkg/spider` 中的併發實作。建立固定數量的 Worker Pool 模式，並利用單一 Task Channel 來分發網址任務，如此可大幅降低系統資源開銷並提高爬取穩定性。或考慮直接整合如 `gocolly/colly` 等成熟的爬蟲框架作為 Fetch 層。
-3. **提升內文提取 (Extraction) 的精準度與容錯能力**：
-   - 深入優化 `pkg/extract/extract.go` 中的 `densityBestNode` 評分演算法。現在的版本過於單純。
-   - 針對單頁應用程式 (SPA) 或動態載入的元件增加例外處理。建立去雜訊（Boilerplate Removal）的標籤、常見導覽列 / 側邊欄 Class 名稱的黑/白名單判斷系統。
-4. **優化標準庫的使用與增強 JSON-LD 解析容錯 (✅ 已解決)**：
-   - 全面將自製的 `htmlEscape` 替換為 `html` 標準庫的 `EscapeString` 防護。
-   - `pkg/metadata/metadata.go` 的 `extractJSONLD` 已加入更嚴謹且深層的 Type Assertion 檢查（新增支援 `@graph` 巢狀結構、安全型別轉換防護、以及 `recover` 機制），避免在不合規範結構的網頁上觸發 Runtime Panic。

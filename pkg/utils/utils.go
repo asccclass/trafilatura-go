@@ -150,7 +150,11 @@ func IsNoiseElement(n *html.Node) bool {
 	// class/id based heuristics
 	for _, kw := range []string{"sidebar", "footer", "header", "nav", "menu",
 		"advertisement", "banner", "cookie", "popup", "modal", "overlay",
-		"social", "share", "comment-form", "related", "widget"} {
+		"social", "share", "comment-form", "related", "widget",
+		"breadcrumb", "pagination", "newsletter", "subscribe",
+		"toolbar", "floating", "sticky", "promo", "sponsored",
+		"ad-slot", "ads-", "advert", "signup", "signin",
+		"login-form", "search-form"} {
 		if GetAttrContains(n, "class", kw) || GetAttrContains(n, "id", kw) {
 			// Special case: PrimeFaces uses 'ui-widget' for all content containers, don't drop them
 			if kw == "widget" {
@@ -162,6 +166,27 @@ func IsNoiseElement(n *html.Node) bool {
 					continue
 				}
 			}
+			return true
+		}
+	}
+	return false
+}
+
+// contentHintPatterns are class/id patterns that strongly suggest main content.
+var contentHintPatterns = []string{
+	"article-body", "post-content", "entry-content", "story-body",
+	"article-content", "post-body", "entry-body", "prose",
+	"main-content", "page-content", "content-body", "body-content",
+}
+
+// IsContentHint returns true when an element's class/id matches common
+// content container patterns, suggesting it likely holds the main article.
+func IsContentHint(n *html.Node) bool {
+	if n.Type != html.ElementNode {
+		return false
+	}
+	for _, pattern := range contentHintPatterns {
+		if GetAttrContains(n, "class", pattern) || GetAttrContains(n, "id", pattern) {
 			return true
 		}
 	}

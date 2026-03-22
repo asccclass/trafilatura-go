@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/net/html"
 
@@ -344,11 +345,15 @@ type queueItem struct {
 }
 
 // Crawl performs BFS crawling starting from seedURL, returning a channel of results.
+// It uses a fixed worker pool for concurrent page fetching while a coordinator
+// goroutine manages the BFS queue, deduplication, and depth control.
 // It respects cfg.MaxDepth to limit crawl depth and cfg.MaxURLs to cap total URLs.
 func (c *Crawler) Crawl(seedURL string) <-chan CrawlResult {
 	out := make(chan CrawlResult, 100)
+
 	go func() {
 		defer close(out)
+
 		base, err := url.Parse(seedURL)
 		if err != nil {
 			out <- CrawlResult{URL: seedURL, Error: err}
@@ -356,35 +361,91 @@ func (c *Crawler) Crawl(seedURL string) <-chan CrawlResult {
 		}
 		baseHost := base.Hostname()
 
-		queue := []queueItem{{url: seedURL, depth: 0}}
+		workers := c.cfg.Concurrency
+		if workers <= 0 {
+			workers = 1
+		}
+
+		// taskCh sends work items to workers
+		taskCh := make(chan queueItem, 100)
+		// linkCh receives discovered links from workers
+		type linkResult struct {
+			links []queueItem
+			done  bool // signals this task is complete
+		}
+		linkCh := make(chan linkResult, 100)
+
+		// Start fixed worker pool
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for i := 0; i < workers; i++ {
+			go func() {
+				defer wg.Done()
+				for item := range taskCh {
+					resp, err := c.fetcher.Fetch(item.url)
+					if err != nil {
+						out <- CrawlResult{URL: item.url, Error: err}
+						linkCh <- linkResult{done: true}
+						continue
+					}
+
+					out <- CrawlResult{URL: item.url, Body: resp.Body}
+
+					// Discover links if depth allows
+					var discovered []queueItem
+					if item.depth < c.cfg.MaxDepth {
+						links := extractLinks(resp.Body, item.url)
+						for _, link := range links {
+							if FilterURL(link, baseHost, c.cfg.SameHost) {
+								discovered = append(discovered, queueItem{url: link, depth: item.depth + 1})
+							}
+						}
+					}
+					linkCh <- linkResult{links: discovered, done: true}
+
+					// Polite delay between requests
+					if c.cfg.Delay > 0 {
+						time.Sleep(c.cfg.Delay)
+					}
+				}
+			}()
+		}
+
+		// Coordinator: manage BFS queue and distribute work
 		c.store.Add(seedURL)
+		queue := []queueItem{{url: seedURL, depth: 0}}
+		inFlight := 0
 
-		for len(queue) > 0 && c.store.Len() <= c.cfg.MaxURLs {
-			item := queue[0]
-			queue = queue[1:]
-
-			resp, err := c.fetcher.Fetch(item.url)
-			if err != nil {
-				out <- CrawlResult{URL: item.url, Error: err}
-				continue
+		for len(queue) > 0 || inFlight > 0 {
+			// Send as many queued items as possible
+			for len(queue) > 0 && c.store.Len() <= c.cfg.MaxURLs {
+				item := queue[0]
+				queue = queue[1:]
+				taskCh <- item
+				inFlight++
 			}
 
-			out <- CrawlResult{URL: item.url, Body: resp.Body}
-
-			// Discover links only if we haven't reached max depth
-			if item.depth < c.cfg.MaxDepth && c.store.Len() < c.cfg.MaxURLs {
-				links := extractLinks(resp.Body, item.url)
-				for _, link := range links {
-					if !c.store.Seen(link) && FilterURL(link, baseHost, c.cfg.SameHost) {
-						c.store.Add(link)
-						queue = append(queue, queueItem{url: link, depth: item.depth + 1})
+			// Wait for at least one worker to finish
+			if inFlight > 0 {
+				result := <-linkCh
+				inFlight--
+				if result.links != nil && c.store.Len() < c.cfg.MaxURLs {
+					for _, item := range result.links {
+						if c.store.Add(item.url) && c.store.Len() <= c.cfg.MaxURLs {
+							queue = append(queue, item)
+						}
 					}
 				}
 			}
 		}
+
+		close(taskCh)
+		wg.Wait()
 	}()
+
 	return out
 }
+
 
 // extractLinks finds all href links in HTML content.
 func extractLinks(data []byte, baseURL string) []string {

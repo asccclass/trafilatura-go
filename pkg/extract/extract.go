@@ -142,13 +142,16 @@ func (e *Extractor) findMainContent(doc *html.Node) *html.Node {
 }
 
 // densityBestNode finds the block element with the highest text density.
+// It uses a multi-signal approach: direct content scoring, parent-child
+// aggregation, content-hint bonuses, and noise penalties.
 func (e *Extractor) densityBestNode(doc *html.Node) *html.Node {
 	type candidate struct {
 		node  *html.Node
 		score float64
 	}
 
-	var best candidate
+	// Phase 1: score all candidate containers
+	scoreMap := make(map[*html.Node]float64)
 
 	candidates := utils.FindNodes(doc, func(n *html.Node) bool {
 		tag := strings.ToLower(n.Data)
@@ -158,14 +161,52 @@ func (e *Extractor) densityBestNode(doc *html.Node) *html.Node {
 
 	for _, n := range candidates {
 		text := utils.TextContent(n)
+		// Skip nodes with insufficient text
+		if len(text) < e.cfg.MinExtractedSize {
+			continue
+		}
 		score := utils.ContentSignal(text)
+
+		// Bonus for content-hint class/id patterns (e.g. "post-content", "article-body")
+		if utils.IsContentHint(n) {
+			score *= 1.5
+		}
+
+		// Penalty for residual noise class/id patterns not caught by preclean
+		if utils.IsNoiseElement(n) {
+			score *= 0.3
+		}
+
+		scoreMap[n] = score
+	}
+
+	// Phase 2: propagate child scores upward to parent containers
+	// This helps identify wrapper divs that contain multiple content-rich children
+	for _, n := range candidates {
+		childScore, exists := scoreMap[n]
+		if !exists || childScore == 0 {
+			continue
+		}
+		parent := n.Parent
+		if parent != nil && parent.Type == html.ElementNode {
+			tag := strings.ToLower(parent.Data)
+			if tag == "div" || tag == "section" || tag == "article" || tag == "main" {
+				scoreMap[parent] += childScore * 0.5
+			}
+		}
+	}
+
+	// Phase 3: find the best candidate
+	var best candidate
+	for node, score := range scoreMap {
 		if score > best.score {
-			best = candidate{node: n, score: score}
+			best = candidate{node: node, score: score}
 		}
 	}
 
 	return best.node
 }
+
 
 // toBlocks recursively converts DOM nodes to text blocks.
 func (e *Extractor) toBlocks(n *html.Node, depth int) []*Block {
