@@ -26,6 +26,8 @@ A complete **Go reimplementation** of [trafilatura](https://github.com/adbar/tra
 - **高容錯 JSON-LD 解析 (Robust Metadata)**：加入支援 `@graph` 巢狀結構、嚴謹的弱型別檢查與 `recover` 防護機制，避免在遇到不合規範的網頁時發生 Runtime Panic。
 - **完善的語料庫測試 (Golden Tests Corpus)**：建立涵蓋新聞、中日韓部落格、百科、SPA 空殼及高雜訊頁面等代表性場景的自動化測試套件，確保程式碼重構不引發回歸錯誤 (Regression)。
 - **安全的 HTML 轉譯 (Secure Escaping)**：全面採用 Go 標準庫 `html.EscapeString` 處理字串轉譯，預防 XSS 與注入攻擊風險。
+- **內建智慧語系 fallback 偵測 (Language Detection Fallback)**：當網頁缺乏 HTML `lang` 屬性時，自動整合由 `whatlanggo` 提供的高準確度 text-based 語系分析，免除錯標或漏標導致的擷取缺陷。
+- **Unicode 安全的字串處理 (Unicode-Safe Truncation)**：在擷取內容摘要 (Excerpt) 時，改採智慧長度截斷引擎，優先尋找空白與標點符號的斷詞邊界，完美避開 Emoji 組合與連字號等複雜 Unicode 因粗暴切斷 rune 陣列所造成的亂碼現象。
 
 ---
 
@@ -247,19 +249,3 @@ The fallback text-based detection activates automatically when all metadata sour
 Apache 2.0 — same as the original trafilatura project.
 
 ---
-
-## 🔍 專案分析與待改進項 (Project Analysis & Future Work)
-
-雖然本專案已經過多項架構與效能優化，但仍有一些可以繼續完善的方向：
-
-### 🚨 目前待解決的問題 (Current Issues)
-
-1. **多語系偵測過於簡化 (Language Detection Flaws)**
-   - **問題**：在 `pkg/metadata/metadata.go` 中，對文章語言的捕捉僅依賴 `<html lang="xx">` 屬性。
-   - **影響**：原版 Python Trafilatura 能夠選擇使用 `fasttext` 或 `cld2` 等強大的機器學習模組進行真實語系偵測。目前 Go 版本的實作若遇到未標示或錯誤標示 HTML `lang` 的網站，將無法得知文章真實的語言內容。
-2. **字串截斷處理潛在的 Unicode 問題 (String Truncation Quirks)**
-   - **問題**：在 `formatJSON` 中擷取 Excerpt 首段時，直接使用 `runes[:200]` 切斷陣列。
-   - **影響**：直接使用 `runes[:200]` 截斷字串在遇到複雜的 Unicode 組合字元（例如 Emoji 或特定語言的連字組合）時，有可能會造成字元截斷錯誤或呈現亂碼。
-3. **下載器的併發模型設計 (Concurrency Model in Fetch)**
-   - **問題**：`pkg/fetch/fetch.go` 中的 `FetchMany` 雖然使用了 Goroutine + Channel 所構成的 Semaphore 來控制最大併發數量，但其迴圈仍會為「每一個給定的 URL」生成一個獨立的 Goroutine，然後再讓其在 Semaphore 上排隊等待 (Block)。
-   - **影響**：如果使用者傳入了十萬個甚至百萬個 URL 列表，短時間內將導致記憶體中產生大量處於休眠狀態的 Goroutines，引發不必要的記憶體與排程開銷。
