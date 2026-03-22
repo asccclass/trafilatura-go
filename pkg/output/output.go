@@ -10,6 +10,7 @@ import (
 	"html"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"example.com/trafilatura-go/pkg/extract"
 	"example.com/trafilatura-go/pkg/metadata"
@@ -42,6 +43,34 @@ func Format(r *Result, cfg *settings.Config) (string, error) {
 	default:
 		return formatText(r), nil
 	}
+}
+
+// truncateExcerpt truncates a string to approximately maxRunes runes,
+// preferring to break at a word boundary (space or newline) to avoid
+// cutting in the middle of a word or splitting a multi-codepoint grapheme
+// cluster (e.g. Emoji sequences like 👨‍👩‍👧‍👦).
+func truncateExcerpt(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+
+	// Walk rune-by-rune, track the last word-break position
+	lastBreak := 0
+	runeCount := 0
+	for i, r := range s {
+		if runeCount >= maxRunes {
+			if lastBreak > 0 {
+				return strings.TrimRight(s[:lastBreak], " \n\r\t") + "…"
+			}
+			// No break found; cut at current rune boundary
+			return s[:i] + "…"
+		}
+		if r == ' ' || r == '\n' || r == '\t' {
+			lastBreak = i
+		}
+		runeCount++
+	}
+	return s
 }
 
 // ---- Plain Text ----
@@ -121,13 +150,8 @@ func formatJSON(r *Result, pretty bool) (string, error) {
 			out.Date = r.Meta.Date.Format(time.RFC3339)
 		}
 	}
-	// First 200 runes as excerpt
-	runes := []rune(r.BodyText)
-	if len(runes) > 200 {
-		out.Excerpt = string(runes[:200]) + "…"
-	} else if len(runes) > 0 {
-		out.Excerpt = string(runes)
-	}
+	// Excerpt: first ~200 runes, truncated at a word boundary
+	out.Excerpt = truncateExcerpt(r.BodyText, 200)
 
 	var data []byte
 	var err error

@@ -132,11 +132,16 @@ func (f *Fetcher) FetchMany(urls []string) <-chan Result {
 		return out
 	}
 
-	workQueue := make(chan string, len(urls))
-	for _, u := range urls {
-		workQueue <- u
-	}
-	close(workQueue)
+	// Use a small buffer to avoid allocating a huge channel for millions of URLs.
+	// A feeder goroutine pushes items gradually.
+	workQueue := make(chan string, f.cfg.Concurrency*2)
+	go func() {
+		defer close(workQueue)
+		for _, u := range urls {
+			workQueue <- u
+		}
+	}()
+
 
 	workers := f.cfg.Concurrency
 	if workers <= 0 {

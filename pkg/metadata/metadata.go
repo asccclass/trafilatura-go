@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/net/html"
 
+	"example.com/trafilatura-go/pkg/langdetect"
 	"example.com/trafilatura-go/pkg/utils"
 )
 
@@ -118,6 +119,19 @@ func Extract(doc *html.Node, pageURL string) *Metadata {
 		})
 		if metaLang != nil {
 			m.Language = utils.GetAttr(metaLang, "content")
+		}
+	}
+
+	// Text-based language detection fallback: when all HTML/meta sources
+	// failed to provide a language, detect from the body text content.
+	if m.Language == "" {
+		bodyNode := utils.FindFirst(doc, func(n *html.Node) bool {
+			return utils.IsElement(n, "body")
+		})
+		if bodyNode != nil {
+			if detected := langdetect.Detect(utils.TextContent(bodyNode)); detected != "" {
+				m.Language = detected
+			}
 		}
 	}
 
