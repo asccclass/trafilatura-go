@@ -252,16 +252,28 @@ type jsonLDSchema struct {
 	Headline    string      `json:"headline"`
 	Author      interface{} `json:"author"` // can be string or object
 	Publisher   interface{} `json:"publisher"`
-	DatePub     string      `json:"datePublished"`
-	DateMod     string      `json:"dateModified"`
+	DatePub     interface{} `json:"datePublished"` // can be string or other types
+	DateMod     interface{} `json:"dateModified"` // can be string or other types
 	Description string      `json:"description"`
 	Image       interface{} `json:"image"`
-	InLanguage  string      `json:"inLanguage"`
+	InLanguage  interface{} `json:"inLanguage"` // can be string or object
 	Keywords    interface{} `json:"keywords"`
+}
+
+// jsonLDString safely extracts a string from an interface{} value.
+// Returns empty string for non-string types (float64, map, slice, nil, etc.).
+func jsonLDString(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }
 
 // extractJSONLD parses JSON-LD script content for metadata.
 func extractJSONLD(raw string, m *Metadata) {
+	// Safety net: recover from any unexpected panic in malformed JSON-LD
+	defer func() { recover() }() //nolint:errcheck
+
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return
@@ -272,7 +284,20 @@ func extractJSONLD(raw string, m *Metadata) {
 	if raw[0] == '[' {
 		json.Unmarshal([]byte(raw), &schemas) //nolint:errcheck
 	} else {
-		schemas = []json.RawMessage{json.RawMessage(raw)}
+		// Try to detect @graph wrapper
+		var wrapper map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(raw), &wrapper); err == nil {
+			if graph, ok := wrapper["@graph"]; ok {
+				var graphSchemas []json.RawMessage
+				if json.Unmarshal(graph, &graphSchemas) == nil {
+					schemas = graphSchemas
+				}
+			}
+		}
+		// If no @graph found (or parse failed), treat as single schema
+		if len(schemas) == 0 {
+			schemas = []json.RawMessage{json.RawMessage(raw)}
+		}
 	}
 
 	for _, s := range schemas {
@@ -336,11 +361,11 @@ func extractJSONLD(raw string, m *Metadata) {
 			}
 		}
 
-		// Date
+		// Date (safely handle non-string values)
 		if m.DateStr == "" {
-			dateStr := schema.DatePub
+			dateStr := jsonLDString(schema.DatePub)
 			if dateStr == "" {
-				dateStr = schema.DateMod
+				dateStr = jsonLDString(schema.DateMod)
 			}
 			if dateStr != "" {
 				m.DateStr = dateStr
@@ -355,9 +380,11 @@ func extractJSONLD(raw string, m *Metadata) {
 			m.Description = schema.Description
 		}
 
-		// Language
-		if m.Language == "" && schema.InLanguage != "" {
-			m.Language = schema.InLanguage
+		// Language (safely handle non-string values)
+		if m.Language == "" {
+			if lang := jsonLDString(schema.InLanguage); lang != "" {
+				m.Language = lang
+			}
 		}
 
 		// Image

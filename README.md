@@ -253,8 +253,8 @@ Apache 2.0 — same as the original trafilatura project.
    - **問題**：在 `pkg/metadata/metadata.go` 中，對文章語言的捕捉僅依賴 `<html lang="xx">` 屬性。
    - **影響**：原版 Python Trafilatura 能夠選擇使用 `fasttext` 或 `cld2` 等強大的機器學習模組進行真實語系偵測。目前 Go 版本的實作若遇到未標示或錯誤標示 HTML `lang` 的網站，將無法得知文章真實的語言內容。
 3. **字串清理與 HTML 轉譯存在安全盲區 (String Escaping Quirks)**
-   - **問題**：在 `pkg/output/output.go` 裡的 `htmlEscape` 函式採用開發者手動實作的字串替換 (`strings.ReplaceAll(...)`)；另外在 `formatJSON` 中擷取 Excerpt 首段時，直接使用 `runes[:200]` 切斷陣列。
-   - **影響**：手動設計的 HTML Escape 容易遺漏邊界情況（例如未處理單引號或其他特殊 Entities），建議改用 Go 標準庫 `html.EscapeString` 來避免 XSS 與注入風險。直接使用 `runes[:200]` 截斷字串在遇到複雜的 Unicode 組合字元（例如 Emoji 或特定語言的連字組合）時，有可能會造成字元截斷錯誤或呈現亂碼。
+   - **問題**：~~在 `pkg/output/output.go` 裡的 `htmlEscape` 函式採用開發者手動實作的字串替換 (`strings.ReplaceAll(...)`)~~ (✅ 已替換為標準庫 `html.EscapeString`)；另外在 `formatJSON` 中擷取 Excerpt 首段時，直接使用 `runes[:200]` 切斷陣列。
+   - **影響**：~~手動設計的 HTML Escape 容易遺漏邊界情況（例如未處理單引號或其他特殊 Entities），建議改用 Go 標準庫 `html.EscapeString` 來避免 XSS 與注入風險。~~直接使用 `runes[:200]` 截斷字串在遇到複雜的 Unicode 組合字元（例如 Emoji 或特定語言的連字組合）時，有可能會造成字元截斷錯誤或呈現亂碼。
 4. **爬蟲與下載的併發模型設計 (Concurrency Model in Fetch)**
    - **問題**：`pkg/fetch/fetch.go` 中的 `FetchMany` 雖然使用了 Goroutine + Channel 所構成的 Semaphore 來控制最大併發數量，但其迴圈仍會為「每一個給定的 URL」生成一個獨立的 Goroutine，然後再讓其在 Semaphore 上排隊等待 (Block)。
    - **影響**：如果使用者傳入了十萬個甚至百萬個 URL 列表，短時間內將導致記憶體中產生大量處於休眠狀態的 Goroutines，引發不必要的記憶體與排程開銷。
@@ -269,6 +269,6 @@ Apache 2.0 — same as the original trafilatura project.
 3. **提升內文提取 (Extraction) 的精準度與容錯能力**：
    - 深入優化 `pkg/extract/extract.go` 中的 `densityBestNode` 評分演算法。現在的版本過於單純。
    - 針對單頁應用程式 (SPA) 或動態載入的元件增加例外處理。建立去雜訊（Boilerplate Removal）的標籤、常見導覽列 / 側邊欄 Class 名稱的黑/白名單判斷系統。
-4. **優化標準庫的使用與增強 JSON-LD 解析容錯**：
-   - 全面將自製的 `htmlEscape` 替換為 `html/template` 的 `HTMLEscapeString` 防護。
-   - `pkg/metadata/metadata.go` 的 `extractJSONLD` 對於弱型別的 JSON 解析（特別是巢狀 `interface{}`）應加入更嚴謹且深層的 Type Assertion 檢查，避免在不合規範結構的網頁上觸發 Runtime Panic。
+4. **優化標準庫的使用與增強 JSON-LD 解析容錯 (✅ 已解決)**：
+   - 全面將自製的 `htmlEscape` 替換為 `html` 標準庫的 `EscapeString` 防護。
+   - `pkg/metadata/metadata.go` 的 `extractJSONLD` 已加入更嚴謹且深層的 Type Assertion 檢查（新增支援 `@graph` 巢狀結構、安全型別轉換防護、以及 `recover` 機制），避免在不合規範結構的網頁上觸發 Runtime Panic。
